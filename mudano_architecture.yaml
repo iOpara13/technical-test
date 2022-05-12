@@ -1,0 +1,317 @@
+Resources:
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties: 
+      CidrBlock: 192.168.0.0/22
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      InstanceTenancy: default
+      Tags: 
+       - 
+        Key: Name
+        Value: !Join ["-", [!Ref "AWS::StackName", "vpc"]]
+  InternetGateway:
+    # Provides the VPC resource access to the public internet
+    Type: AWS::EC2::InternetGateway
+    DependsOn: VPC
+    Properties:
+      Tags:
+        -
+          Key: Name
+          Value: !Join ["-", [!Ref "AWS::StackName", "igw"]]
+  GatewayLink:
+    Type: AWS::EC2::VPCGatewayAttachment
+    DependsOn: [VPC, InternetGateway]
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+  PublicSubnetAZ1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 192.168.0.0/24
+      AvailabilityZone: !Select [0,!GetAZs us-east-1]
+      Tags:
+        -
+          Key: Name
+          Value: !Join ["-", [!Ref "AWS::StackName", "Public", !Select [0,!GetAZs us-east-1]]]
+        -
+          Key: Subnet-Type
+          Value: Public
+  PublicSubnetAZ2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 192.168.1.0/24
+      AvailabilityZone: !Select [1,!GetAZs us-east-1]
+      Tags:
+        -
+          Key: Name
+          Value: !Join ["-", [!Ref "AWS::StackName", "Public", !Select [1,!GetAZs us-east-1]]]
+        -
+          Key: Subnet-Type
+          Value: Public
+  PrivateSubnetAZ1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 192.168.2.0/24
+      AvailabilityZone: !Select [0,!GetAZs us-east-1]
+      Tags:
+        -
+          Key: Name
+          Value: !Join ["-", [!Ref "AWS::StackName", "Private", !Select [0,!GetAZs us-east-1]]]
+        -
+          Key: Subnet-Type
+          Value: Private
+  PrivateSubnetAZ2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 192.168.3.0/24
+      AvailabilityZone: !Select [1,!GetAZs us-east-1]
+      Tags:
+        -
+          Key: Name
+          Value: !Join ["-", [!Ref "AWS::StackName", "Private", !Select [1,!GetAZs us-east-1]]]
+        -
+          Key: Subnet-Type
+          Value: Private
+  NATGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt ElasticIP.AllocationId
+      SubnetId: !Ref PublicSubnetAZ1
+      Tags:
+        -
+          Key: Name
+          Value: !Join ["-", ["nat", !Ref "AWS::StackName"]]
+  ElasticIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: VPC
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        -
+          Key: Name
+          Value: PublicRouteTable
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        -
+          Key: Name
+          Value: PrivateRouteTable
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: GatewayLink
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+  PrivateRoute: 
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NATGateway
+  PublicAZ1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetAZ1
+      RouteTableId: !Ref PublicRouteTable
+  PublicAZ2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetAZ2
+      RouteTableId: !Ref PublicRouteTable
+  PrivateAZ1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetAZ1
+      RouteTableId: !Ref PrivateRouteTable
+  MudanoRawBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: mudano-raw
+      LifecycleConfiguration:
+        Rules:
+          -
+            Id: expired
+            Status: Enabled
+            ExpirationInDays: 30
+  MudanoProcessedBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: mudano-processed
+      LifecycleConfiguration:
+        Rules:
+          -
+            Id: expired
+            Status: Enabled
+            ExpirationInDays: 365
+  MudanoRejectsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: mudano-rejects
+      LifecycleConfiguration:
+        Rules:
+          -
+            Id: expired
+            Status: Enabled
+            ExpirationInDays: 30
+  EtlLogTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      Subscription:
+        - 
+          Endpoint: iopara13@gmail.com
+          Protocol: email
+      TopicName: LoggingNotification
+  RoleLambdaS3RW:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Description: Provides read write access for Lambda to S3 buckets
+      RoleName: role_lambda_s3_rw
+      ManagedPolicyArns: 
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+  RoleLambdaSNS:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - 
+          PolicyName: LambdaSNSPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              -
+                Effect: Allow
+                Action: 
+                  - sns:GetTopicAttributes 
+                  - sns:Publish 
+                  - sns:ListSubscriptions
+                  - sns:ListSubscriptionsByTopic
+                  - sns:ListTopics
+                  - sns:Subscribe
+                Resource: !Ref EtlLogTopic
+      Description: Provides access for Lambda to LoggingNotification SNS topc
+      RoleName: role_lambda_sns_etl_topic
+  RoleLambdaGlue:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - 
+          PolicyName: LambdaGluePolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              -
+                Effect: Allow
+                Action: "*"
+                Resource: "arn:aws:s3:::aws-glue-*/*"
+      Description: Provides access for Lambda to Glue
+      RoleName: role_lambda_glue
+  RoleGlueService:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: Allow
+            Principal:
+              Service:
+                - glue.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Description: Provides access for Glue to AWS services such as S3, R
+      RoleName: role_glue_service
+      ManagedPolicyArns: 
+        - arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole
+  GlueSG1:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: RDS Security Group
+      GroupName: !Join ["-", ["gluerdssg1", "AWS::StackName"]]
+      SecurityGroupIngress:
+        - 
+          IpProtocol: tcp
+          FromPort: 0
+          ToPort: 65535
+          CidrIp: 192.168.2.0/24
+      SecurityGroupEgress:
+        - 
+          IpProtocol: tcp
+          FromPort: 0
+          ToPort: 65535
+          CidrIp: 0.0.0.0/0
+      VpcId: !Ref VPC
+  #BastionSG:
+  #
+  #EtlEventBus:
+  #  Type: AWS::Events::EventBus
+  #RuleDailyUploadSchedule:
+  #  Type: AWS::Events::Rule
+  #  Properties:
+  #RuleNewRawS3Object:
+  #  Type: AWS::Events::Rule
+  #  Properties:
+  #RuleNewRejectsS3Object:
+  #  Type: AWS::Events::Rule
+  #  Properties:
+  #LambdaIngest:
+  #  Type:
+  #  Properties:
+  #LambdaDQ:
+  #  Type:
+  #  Properties:
+  #LambdaGlueTrigger:
+  #  Type:
+  #  Properties:
+  #LambdaSNS:
+  #  Type:
+  #  Properties:
+  #GlueInsertUpdateRecipe:
+  #  Type:
+  #GlueInsertUpdateJob:
+  #Ec2KeyPair:
+  #  Type: AWS::EC2:KeyPair
+  #  Properties:
+  #    KeyName: bastionKey
+  #BastionHostEC2:
+  #  Type:
+  #  Properties:
